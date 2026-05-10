@@ -14,6 +14,10 @@ import { WelcomeScreen } from "@/components/project/welcome-screen"
 import { CreateProjectDialog } from "@/components/project/create-project-dialog"
 import type { WikiProject } from "@/types/wiki"
 
+function hasTauriRuntime(): boolean {
+  return typeof window !== "undefined" && ("__TAURI_INTERNALS__" in window || "__TAURI__" in window)
+}
+
 function App() {
   const project = useWikiStore((s) => s.project)
   const setProject = useWikiStore((s) => s.setProject)
@@ -333,13 +337,17 @@ function App() {
   }
 
   async function handleOpenProject() {
-    const selected = await open({
-      directory: true,
-      multiple: false,
-      title: "Open Wiki Project",
-    })
-    if (!selected) return
     try {
+      if (!hasTauriRuntime()) {
+        window.alert("Open projects from the Tauri desktop app. The browser preview cannot access native folder dialogs.")
+        return
+      }
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Open Wiki Project",
+      })
+      if (!selected) return
       const proj = await openProject(selected)
       await handleProjectOpened(proj)
     } catch (err) {

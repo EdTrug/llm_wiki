@@ -7,13 +7,13 @@
 //! editing and repository-agent behavior are intentionally out of scope.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
@@ -166,6 +166,51 @@ fn build_codex_prompt(messages: &[CodexMessage]) -> Result<String, String> {
     Ok(prompt)
 }
 
+fn normalize_reasoning_effort(reasoning_effort: Option<&str>) -> &'static str {
+    match reasoning_effort
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some("low") => "low",
+        Some("medium") => "medium",
+        Some("high") => "high",
+        Some("xhigh") => "xhigh",
+        _ => DEFAULT_CODEX_REASONING_EFFORT,
+    }
+}
+
+fn toml_string(value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
+fn safe_stream_file_stem(stream_id: &str) -> String {
+    let safe: String = stream_id
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .collect();
+    if safe.is_empty() {
+        "stream".to_string()
+    } else {
+        safe
+    }
+}
+
+fn codex_log_dir(app: &AppHandle) -> PathBuf {
+    app.path()
+        .app_log_dir()
+        .unwrap_or_else(|_| std::env::temp_dir().join("llm-wiki-codex-logs"))
+        .join("codex")
+}
+
+async fn read_optional_text_file(path: &Path) -> Option<String> {
+    tokio::fs::read_to_string(path)
+        .await
+        .ok()
+        .map(|text| text.trim_end_matches(['\r', '\n']).to_string())
+        .filter(|text| !text.trim().is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,6 +250,30 @@ mod tests {
 
         assert!(err.contains("No user message"));
     }
+
+    #[test]
+    fn normalize_reasoning_effort_accepts_only_codex_efforts() {
+        assert_eq!(normalize_reasoning_effort(Some("low")), "low");
+        assert_eq!(normalize_reasoning_effort(Some("medium")), "medium");
+        assert_eq!(normalize_reasoning_effort(Some("high")), "high");
+        assert_eq!(normalize_reasoning_effort(Some("xhigh")), "xhigh");
+        assert_eq!(
+            normalize_reasoning_effort(Some("max")),
+            DEFAULT_CODEX_REASONING_EFFORT
+        );
+        assert_eq!(
+            normalize_reasoning_effort(None),
+            DEFAULT_CODEX_REASONING_EFFORT
+        );
+    }
+
+    #[test]
+    fn toml_string_escapes_paths_for_config_args() {
+        assert_eq!(
+            toml_string(r#"C:\tmp\codex "logs""#),
+            r#""C:\\tmp\\codex \"logs\"""#
+        );
+    }
 }
 
 /// Spawn `codex exec --json ... -` and pipe stdout back to the frontend as
@@ -216,11 +285,21 @@ pub async fn codex_cli_spawn(
     state: State<'_, CodexCliState>,
     stream_id: String,
     model: String,
+    reasoning_effort: Option<String>,
     messages: Vec<CodexMessage>,
 ) -> Result<(), String> {
     let prompt = build_codex_prompt(&messages)?;
     let codex = find_codex_command()?;
     let workdir = std::env::temp_dir();
+    let log_dir = codex_log_dir(&app);
+    tokio::fs::create_dir_all(&log_dir)
+        .await
+        .map_err(|e| format!("Failed to create Codex log directory: {e}"))?;
+    let last_message_path = workdir.join(format!(
+        "llm-wiki-codex-last-message-{}.txt",
+        safe_stream_file_stem(&stream_id)
+    ));
+    let effective_reasoning_effort = normalize_reasoning_effort(reasoning_effort.as_deref());
 
     let mut cmd = Command::new(&codex);
     cmd.arg("exec")
@@ -236,10 +315,20 @@ pub async fn codex_cli_spawn(
         .arg("approval_policy=\"never\"")
         .arg("--config")
         .arg(format!(
-            "model_reasoning_effort=\"{DEFAULT_CODEX_REASONING_EFFORT}\""
+            "model_reasoning_effort={}",
+            toml_string(effective_reasoning_effort)
         ))
         .arg("--config")
         .arg("features.fast_mode=false")
+        .arg("--config")
+        .arg("hide_agent_reasoning=true")
+        .arg("--config")
+        .arg(format!(
+            "log_dir={}",
+            toml_string(&log_dir.to_string_lossy())
+        ))
+        .arg("--output-last-message")
+        .arg(&last_message_path)
         .arg("-C")
         .arg(&workdir);
 
@@ -293,6 +382,8 @@ pub async fn codex_cli_spawn(
     let stream_id_task = stream_id.clone();
     let topic = format!("codex-cli:{stream_id}");
     let done_topic = format!("codex-cli:{stream_id}:done");
+    let log_dir_task = log_dir.to_string_lossy().to_string();
+    let last_message_path_task = last_message_path.clone();
 
     tokio::spawn(async move {
         let mut reader = BufReader::new(stdout).lines();
@@ -335,12 +426,16 @@ pub async fn codex_cli_spawn(
         };
 
         let stderr_text = stderr_task.await.unwrap_or_default();
+        let last_message = read_optional_text_file(&last_message_path_task).await;
+        let _ = tokio::fs::remove_file(&last_message_path_task).await;
 
         let _ = app.emit(
             &done_topic,
             serde_json::json!({
                 "code": exit_code,
                 "stderr": stderr_text,
+                "lastMessage": last_message,
+                "logDir": log_dir_task,
             }),
         );
     });

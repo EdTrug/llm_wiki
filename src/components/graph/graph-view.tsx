@@ -2,6 +2,7 @@ import { useEffect, useCallback, useMemo, useState, useRef, type ChangeEvent } f
 import Graph from "graphology"
 import { SigmaContainer, useLoadGraph, useRegisterEvents, useSigma } from "@react-sigma/core"
 import "@react-sigma/core/lib/style.css"
+import { NodeCircleProgram } from "sigma/rendering"
 import type { SigmaNodeEventPayload } from "sigma/types"
 import forceAtlas2 from "graphology-layout-forceatlas2"
 import { Network, RefreshCw, ZoomIn, ZoomOut, Maximize, Layers, Tag, Lightbulb, AlertTriangle, Link2, X, Search, Loader2, Filter, RotateCcw, EyeOff } from "lucide-react"
@@ -661,8 +662,11 @@ export function GraphView() {
             style={{ width: "100%", height: "100%", background: "transparent" }}
             settings={{
               renderEdgeLabels: true,
+              defaultNodeType: "circle",
               defaultEdgeColor: "#cbd5e1",
               defaultNodeColor: "#94a3b8",
+              nodeProgramClasses: { circle: NodeCircleProgram },
+              nodeHoverProgramClasses: { circle: NodeCircleProgram },
               labelSize: 13,
               labelWeight: "bold",
               labelColor: { color: "#1e293b" },

@@ -32,6 +32,16 @@ interface ReviewState {
 
 let counter = 0
 
+function maxGeneratedReviewId(items: ReviewItem[]): number {
+  let max = 0
+  for (const item of items) {
+    const match = /^review-(\d+)$/.exec(item.id)
+    if (!match) continue
+    max = Math.max(max, Number(match[1]))
+  }
+  return max
+}
+
 export const useReviewStore = create<ReviewState>((set) => ({
   items: [],
 
@@ -96,7 +106,10 @@ export const useReviewStore = create<ReviewState>((set) => ({
       return { items: result }
     }),
 
-  setItems: (items) => set({ items }),
+  setItems: (items) => {
+    counter = Math.max(counter, maxGeneratedReviewId(items))
+    set({ items })
+  },
 
   resolveItem: (id, action) =>
     set((state) => ({

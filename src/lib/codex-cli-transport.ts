@@ -70,7 +70,28 @@ type CodexCliMessage = {
 type SpawnPayload = Record<string, unknown> & {
   streamId: string
   model: string
+  reasoningEffort: CodexCliReasoningEffort
   messages: CodexCliMessage[]
+}
+
+type CodexCliReasoningEffort = "low" | "medium" | "high" | "xhigh"
+
+export function toCodexCliReasoningEffort(reasoning?: RequestOverrides["reasoning"]): CodexCliReasoningEffort {
+  switch (reasoning?.mode) {
+    case "off":
+    case "low":
+      return "low"
+    case "medium":
+      return "medium"
+    case "high":
+    case "custom":
+      return "high"
+    case "max":
+      return "xhigh"
+    case "auto":
+    case undefined:
+      return "xhigh"
+  }
 }
 
 function contentToText(content: ChatMessage["content"]): string {
@@ -99,15 +120,6 @@ export async function streamCodexCli(
   overrides?: RequestOverrides,
 ): Promise<void> {
   const { onToken, onDone, onError } = callbacks
-
-  if (import.meta.env?.DEV && overrides) {
-    for (const key of ["temperature", "top_p", "top_k", "max_tokens", "stop", "reasoning"] as const) {
-      if (overrides[key] !== undefined) {
-        // eslint-disable-next-line no-console
-        console.warn(`[codex-cli] ignoring unsupported override "${key}": CLI transport has no stable equivalent flag`)
-      }
-    }
-  }
 
   const streamId = crypto.randomUUID()
   const parse = createCodexCliStreamParser()
@@ -172,21 +184,28 @@ export async function streamCodexCli(
       }
     })
 
-    unlistenDone = await listen<{ code: number | null; stderr: string }>(
+    unlistenDone = await listen<{ code: number | null; stderr: string; lastMessage?: string; logDir?: string }>(
       `codex-cli:${streamId}:done`,
       (event) => {
         const code = event.payload?.code
         const stderr = event.payload?.stderr?.trim() ?? ""
+        const lastMessage = event.payload?.lastMessage?.trim() ?? ""
+        const logDir = event.payload?.logDir?.trim() ?? ""
         if (code !== null && code !== undefined && code !== 0) {
           finishWith(() =>
             onError(
-              new Error(buildExitError(code, stderr, unparsedLines.join("\n"))),
+              new Error(buildExitError(code, stderr, unparsedLines.join("\n"), logDir)),
             ),
           )
+        } else if (emittedTokenChars === 0 && lastMessage) {
+          finishWith(() => {
+            onToken(lastMessage)
+            onDone()
+          })
         } else if (emittedTokenChars === 0) {
           finishWith(() =>
             onError(
-              new Error(buildEmptySuccessError(stderr, unparsedLines.join("\n"))),
+              new Error(buildEmptySuccessError(stderr, unparsedLines.join("\n"), logDir)),
             ),
           )
         } else {
@@ -198,6 +217,7 @@ export async function streamCodexCli(
     const payload: SpawnPayload = {
       streamId,
       model: config.model,
+      reasoningEffort: toCodexCliReasoningEffort(overrides?.reasoning ?? config.reasoning),
       messages: codexMessages,
     }
     timeoutId = setTimeout(() => {
@@ -249,57 +269,67 @@ export function buildTimeoutError(timeoutMs: number = CODEX_CLI_TIMEOUT_MS): str
 export function buildEmptySuccessError(
   stderr: string,
   unparsedStdout: string = "",
+  logDir: string = "",
 ): string {
   const trimmedStdout = unparsedStdout.trim()
   const trimmedStderr = stderr.trim()
+  const logHint = logDir ? `Codex logs: ${logDir}` : ""
   if (trimmedStdout) {
     return [
       "codex CLI exited successfully, but LLM Wiki could not parse any assistant response from stdout.",
       "This usually means the CLI JSONL schema changed or Codex emitted non-message events only.",
+      logHint,
       "Captured stdout:\n",
       trimmedStdout,
       trimmedStderr ? `\n\n-- stderr --\n${trimmedStderr}` : "",
-    ].join(" ").trim()
+    ].filter(Boolean).join(" ").trim()
   }
   if (trimmedStderr) {
     return [
       "codex CLI exited successfully, but produced no assistant response.",
       `stderr: ${trimmedStderr}`,
-    ].join(" ")
+      logHint,
+    ].filter(Boolean).join(" ")
   }
   return [
     "codex CLI exited successfully, but produced no assistant response.",
     "Try running `codex exec --json -` in a terminal with the same prompt",
     "to see whether the CLI emitted an unexpected JSONL shape.",
-  ].join(" ")
+    logHint,
+  ].filter(Boolean).join(" ")
 }
 
 export function buildExitError(
   code: number,
   stderr: string,
   unparsedStdout: string = "",
+  logDir: string = "",
 ): string {
+  const logHint = logDir ? `Codex logs: ${logDir}` : ""
   if (/not.*logged\s*in|please.*log\s*in|authentication|unauthorized|401/i.test(stderr)) {
     return [
       "Codex CLI is not authenticated.",
       "Please open a terminal and run `codex login`, then retry.",
       "(LLM Wiki only spawns the binary; it cannot complete the login flow on your behalf.)",
+      logHint,
       stderr ? `\n\n-- stderr --\n${stderr}` : "",
-    ].join(" ").trim()
+    ].filter(Boolean).join(" ").trim()
   }
   if (stderr) {
-    return `codex CLI exited with code ${code}: ${stderr}`
+    return [`codex CLI exited with code ${code}: ${stderr}`, logHint].filter(Boolean).join(" ")
   }
   if (unparsedStdout.trim()) {
     return [
       `codex CLI exited with code ${code} (no stderr).`,
+      logHint,
       "Captured stdout output that LLM Wiki could not parse:\n",
       unparsedStdout.trim(),
-    ].join(" ")
+    ].filter(Boolean).join(" ")
   }
   return [
     `codex CLI exited silently with code ${code}.`,
     "Try running `codex exec --json -` in a terminal with the same prompt",
     "to see the underlying CLI error, or switch providers in Settings.",
-  ].join(" ")
+    logHint,
+  ].filter(Boolean).join(" ")
 }

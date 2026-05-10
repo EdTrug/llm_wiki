@@ -34,6 +34,23 @@ describe("review-store addItem", () => {
     store.addItem(makeInput({ title: "Same" }))
     expect(useReviewStore.getState().items).toHaveLength(2)
   })
+
+  it("does not reuse persisted review ids after setItems", () => {
+    const persisted: ReviewItem = {
+      ...makeInput({ title: "Persisted" }),
+      id: "review-5000",
+      resolved: false,
+      createdAt: Date.now(),
+    }
+    const store = useReviewStore.getState()
+    store.setItems([persisted])
+    store.addItem(makeInput({ title: "New" }))
+
+    const ids = useReviewStore.getState().items.map((item) => item.id)
+    expect(ids).toContain("review-5000")
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(Number(ids[ids.length - 1]?.replace("review-", ""))).toBeGreaterThan(5000)
+  })
 })
 
 describe("review-store addItems dedupe", () => {

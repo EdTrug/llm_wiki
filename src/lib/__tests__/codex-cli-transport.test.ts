@@ -4,6 +4,7 @@ import {
   buildExitError,
   buildEmptySuccessError,
   buildTimeoutError,
+  toCodexCliReasoningEffort,
 } from "../codex-cli-transport"
 
 describe("createCodexCliStreamParser", () => {
@@ -77,6 +78,17 @@ describe("buildExitError", () => {
 })
 
 describe("Codex CLI transport diagnostics", () => {
+  it("maps app reasoning controls to Codex CLI effort values", () => {
+    expect(toCodexCliReasoningEffort(undefined)).toBe("xhigh")
+    expect(toCodexCliReasoningEffort({ mode: "auto" })).toBe("xhigh")
+    expect(toCodexCliReasoningEffort({ mode: "off" })).toBe("low")
+    expect(toCodexCliReasoningEffort({ mode: "low" })).toBe("low")
+    expect(toCodexCliReasoningEffort({ mode: "medium" })).toBe("medium")
+    expect(toCodexCliReasoningEffort({ mode: "high" })).toBe("high")
+    expect(toCodexCliReasoningEffort({ mode: "custom", budgetTokens: 2048 })).toBe("high")
+    expect(toCodexCliReasoningEffort({ mode: "max" })).toBe("xhigh")
+  })
+
   it("treats exit 0 with only unparsed stdout as a schema/parser error", () => {
     const msg = buildEmptySuccessError("", '{"type":"turn.completed","usage":{}}')
     expect(msg).toMatch(/could not parse any assistant response/i)
