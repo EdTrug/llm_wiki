@@ -51,6 +51,29 @@ describe("review-store addItem", () => {
     expect(new Set(ids).size).toBe(ids.length)
     expect(Number(ids[ids.length - 1]?.replace("review-", ""))).toBeGreaterThan(5000)
   })
+
+  it("renames duplicate persisted review ids when loading items", () => {
+    const first: ReviewItem = {
+      ...makeInput({ title: "First" }),
+      id: "review-2",
+      resolved: false,
+      createdAt: Date.now(),
+    }
+    const duplicate: ReviewItem = {
+      ...makeInput({ title: "Duplicate" }),
+      id: "review-2",
+      resolved: false,
+      createdAt: Date.now(),
+    }
+
+    useReviewStore.getState().setItems([first, duplicate])
+
+    const items = useReviewStore.getState().items
+    expect(items).toHaveLength(2)
+    expect(items[0].id).toBe("review-2")
+    expect(items[1].id).not.toBe("review-2")
+    expect(new Set(items.map((item) => item.id)).size).toBe(items.length)
+  })
 })
 
 describe("review-store addItems dedupe", () => {

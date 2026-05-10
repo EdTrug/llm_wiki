@@ -42,6 +42,25 @@ function maxGeneratedReviewId(items: ReviewItem[]): number {
   return max
 }
 
+function ensureUniqueReviewIds(items: ReviewItem[]): ReviewItem[] {
+  const seen = new Set<string>()
+  let next = maxGeneratedReviewId(items)
+
+  return items.map((item) => {
+    if (!seen.has(item.id)) {
+      seen.add(item.id)
+      return item
+    }
+
+    let id: string
+    do {
+      id = `review-${++next}`
+    } while (seen.has(id))
+    seen.add(id)
+    return { ...item, id }
+  })
+}
+
 export const useReviewStore = create<ReviewState>((set) => ({
   items: [],
 
@@ -107,8 +126,9 @@ export const useReviewStore = create<ReviewState>((set) => ({
     }),
 
   setItems: (items) => {
-    counter = Math.max(counter, maxGeneratedReviewId(items))
-    set({ items })
+    const uniqueItems = ensureUniqueReviewIds(items)
+    counter = Math.max(counter, maxGeneratedReviewId(uniqueItems))
+    set({ items: uniqueItems })
   },
 
   resolveItem: (id, action) =>
