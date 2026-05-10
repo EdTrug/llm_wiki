@@ -37,6 +37,7 @@ export function SearchView() {
   const [results, setResults] = useState<SearchResult[]>([])
   const [searching, setSearching] = useState(false)
   const [hasSearched, setHasSearched] = useState(false)
+  const [deepRawScan, setDeepRawScan] = useState(false)
   // Lightbox state — null when closed. Held inline rather than via
   // a global store: nothing else needs to know which image is in
   // the lightbox, and search-view-local state means the modal
@@ -44,7 +45,7 @@ export function SearchView() {
   const [lightbox, setLightbox] = useState<ImageHit | null>(null)
 
   const doSearch = useCallback(
-    async (q: string) => {
+    async (q: string, includeRawSources = deepRawScan) => {
       if (!project || !q.trim()) {
         setResults([])
         return
@@ -52,7 +53,9 @@ export function SearchView() {
       setSearching(true)
       setHasSearched(true)
       try {
-        const found = await searchWiki(normalizePath(project.path), q)
+        const found = await searchWiki(normalizePath(project.path), q, {
+          includeRawSources,
+        })
         setResults(found)
       } catch (err) {
         console.error("Search failed:", err)
@@ -61,7 +64,7 @@ export function SearchView() {
         setSearching(false)
       }
     },
-    [project],
+    [project, deepRawScan],
   )
 
   // Flatten + dedupe images across results. Two results referencing
@@ -202,6 +205,24 @@ export function SearchView() {
             autoFocus
             className="w-full rounded-md border bg-background py-2 pl-9 pr-3 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
           />
+        </div>
+        <div className="mt-2 flex justify-end">
+          <button
+            type="button"
+            onClick={() => {
+              const next = !deepRawScan
+              setDeepRawScan(next)
+              if (hasSearched && query.trim()) void doSearch(query, next)
+            }}
+            className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition-colors ${
+              deepRawScan
+                ? "border-primary bg-primary text-primary-foreground"
+                : "bg-background text-muted-foreground hover:bg-accent hover:text-foreground"
+            }`}
+          >
+            <FileText className="h-3.5 w-3.5" />
+            Deep raw scan
+          </button>
         </div>
       </div>
 

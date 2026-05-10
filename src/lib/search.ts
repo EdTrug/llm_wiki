@@ -1,6 +1,13 @@
 import { readFile, listDirectory } from "@/commands/fs"
 import type { FileNode } from "@/types/wiki"
-import { normalizePath, getFileStem } from "@/lib/path-utils"
+import { getFileName, normalizePath } from "@/lib/path-utils"
+import {
+  sourceRefFromRawVectorId,
+  sourceSummaryPathForRef,
+  wikiPageIdForRelativePath,
+  wikiPageIdFromPath,
+  wikiPathForPageId,
+} from "@/lib/source-identity"
 
 /**
  * One image reference extracted from a matched page's markdown.
@@ -30,6 +37,15 @@ export interface SearchResult {
    * page" itself, so both views need the full set. May be empty.
    */
   images: ImageRef[]
+}
+
+export interface SearchOptions {
+  /**
+   * Explicit slow path: scan raw/sources with token search. This may
+   * trigger PDF/DOCX/PPTX text extraction reads, so callers should only
+   * enable it for a deliberate "deep raw scan" action.
+   */
+  includeRawSources?: boolean
 }
 
 const MAX_RESULTS = 20
@@ -158,6 +174,19 @@ function flattenMdFiles(nodes: FileNode[]): FileNode[] {
   return files
 }
 
+function flattenRawFiles(nodes: FileNode[]): FileNode[] {
+  const files: FileNode[] = []
+  for (const node of nodes) {
+    if (node.name.startsWith(".")) continue
+    if (node.is_dir && node.children) {
+      files.push(...flattenRawFiles(node.children))
+    } else if (!node.is_dir) {
+      files.push(node)
+    }
+  }
+  return files
+}
+
 function extractTitle(content: string, fileName: string): string {
   // Try YAML frontmatter title
   const frontmatterMatch = content.match(/^---\n[\s\S]*?^title:\s*["']?(.+?)["']?\s*$/m)
@@ -218,6 +247,7 @@ function buildSnippet(content: string, query: string): string {
 export async function searchWiki(
   projectPath: string,
   query: string,
+  options: SearchOptions = {},
 ): Promise<SearchResult[]> {
   if (!query.trim()) return []
   const pp = normalizePath(projectPath)
@@ -227,26 +257,10 @@ export async function searchWiki(
   const effectiveTokens = tokens.length > 0 ? tokens : [query.trim().toLowerCase()]
   const results: SearchResult[] = []
 
-  // Search wiki pages.
-  //
-  // We deliberately do NOT also search `raw/sources/` here anymore.
-  // Previously this section walked every file under raw/sources/
-  // (including PDFs / DOCX / PPTX) and called `readFile` on each,
-  // which triggers the heavy pdfium / office text-extraction path
-  // — even on cache hits, that's an IPC round-trip per file plus
-  // a cache file read of the now-large combined-markdown output
-  // (text + per-page image refs after the unified extractor
-  // landed). On a project with ~50 PDFs this added 5-15s per
-  // search, which the user reported as "very, very slow."
-  //
-  // The content lost: nothing material. Each ingested raw source
-  // produces a `wiki/sources/<slug>.md` summary which is included
-  // in the wiki/ search below; the full extracted text lives in
-  // the embedding chunks and is reachable via vector search. The
-  // raw-files token pass added recall only for raw files that had
-  // never been ingested (and thus had no wiki summary), which is
-  // not a workflow we want to optimize at the cost of every other
-  // search call.
+  // Search wiki pages. Raw source token search is available only via
+  // `includeRawSources` below because reading many PDFs/DOCX/PPTX
+  // files can be very slow; the normal full-source recall path is raw
+  // source embeddings.
   try {
     const t0 = performance.now()
     const wikiTree = await listDirectory(`${pp}/wiki`)
@@ -260,6 +274,23 @@ export async function searchWiki(
     )
   } catch {
     // no wiki directory
+  }
+
+  if (options.includeRawSources) {
+    try {
+      const t0 = performance.now()
+      const sourceTree = await listDirectory(`${pp}/raw/sources`)
+      const rawFiles = flattenRawFiles(sourceTree)
+      const tList = Math.round(performance.now() - t0)
+      const t1 = performance.now()
+      await searchFiles(rawFiles, effectiveTokens, query, results)
+      const tRead = Math.round(performance.now() - t1)
+      console.log(
+        `[Search:token] raw/sources ${rawFiles.length} files | list=${tList}ms read+match=${tRead}ms`,
+      )
+    } catch {
+      // no raw sources directory
+    }
   }
 
   // ── Build the token-side ranking (still based on the score field
@@ -294,23 +325,62 @@ export async function searchWiki(
           : "")
       )
 
-      // Build vectorRank by page_id (slug); searchByEmbedding returns
+      // Build vectorRank by page_id; searchByEmbedding returns
       // results pre-sorted by descending similarity.
-      vectorResults.forEach((vr, i) => vectorRank.set(vr.id, i + 1))
-
-      // Materialize any vector-result page that token search didn't
-      // already include — without this, `results` has no entry for
-      // them and they can't surface even with a top vector rank.
-      const knownIds = new Set(results.map((r) => getFileStem(r.path)))
+      //
+      // Raw source embeddings use ids like `raw-sources/foo.pdf`.
+      // Those are materialized back to their source-summary page
+      // (`wiki/sources/foo.md`) so the UI opens curated wiki content
+      // while still ranking on the full raw extracted text.
+      const knownIds = new Set(results.map((r) => wikiPageIdFromPath(pp, r.path)))
       let added = 0
-      for (const vr of vectorResults) {
-        if (knownIds.has(vr.id)) continue
-        const dirs = ["entities", "concepts", "sources", "synthesis", "comparison", "queries"]
-        for (const dir of dirs) {
-          const tryPath = `${pp}/wiki/${dir}/${vr.id}.md`
+      for (let i = 0; i < vectorResults.length; i++) {
+        const vr = vectorResults[i]
+        const rawSourceRef = sourceRefFromRawVectorId(vr.id)
+        if (rawSourceRef) {
+          const summaryRel = sourceSummaryPathForRef(rawSourceRef)
+          const resultId = wikiPageIdForRelativePath(summaryRel)
+          vectorRank.set(resultId, i + 1)
+          if (knownIds.has(resultId)) continue
+
+          const tryPath = `${pp}/${summaryRel}`
           try {
             const content = await readFile(tryPath)
-            const title = extractTitle(content, `${vr.id}.md`)
+            const title = extractTitle(content, getFileName(tryPath))
+            const chunkSnippet = vr.matchedChunks?.[0]?.text?.trim()
+            results.push({
+              path: tryPath,
+              title,
+              snippet: chunkSnippet ? buildSnippet(chunkSnippet, query) : buildSnippet(content, query),
+              titleMatch: false,
+              score: 0, // overwritten by RRF below
+              images: extractImageRefs(content),
+            })
+            knownIds.add(resultId)
+            added++
+          } catch {
+            // Source summary may have been deleted while raw chunks
+            // still exist. Do not surface a raw-only result here; the
+            // explicit deep raw scan handles that slower fallback.
+          }
+          continue
+        }
+
+        const candidatePaths = [
+          wikiPathForPageId(pp, vr.id),
+          // Legacy stem-only chunks from projects indexed before
+          // path-based ids. Kept as a compatibility fallback until
+          // the next full reindex clears v2.
+          ...["entities", "concepts", "sources", "synthesis", "comparisons", "queries"]
+            .map((dir) => `${pp}/wiki/${dir}/${vr.id}.md`),
+        ]
+        for (const tryPath of candidatePaths) {
+          try {
+            const content = await readFile(tryPath)
+            const resultId = wikiPageIdFromPath(pp, tryPath)
+            vectorRank.set(resultId, i + 1)
+            if (knownIds.has(resultId)) break
+            const title = extractTitle(content, getFileName(tryPath))
             results.push({
               path: tryPath,
               title,
@@ -319,11 +389,11 @@ export async function searchWiki(
               score: 0, // overwritten by RRF below
               images: extractImageRefs(content),
             })
-            knownIds.add(vr.id)
+            knownIds.add(resultId)
             added++
             break
           } catch {
-            // not in this directory
+            // try next compatibility path
           }
         }
       }
@@ -344,7 +414,7 @@ export async function searchWiki(
   // results array, which already contains every candidate).
   for (const r of results) {
     const tRank = tokenRank.get(normalizePath(r.path))
-    const vRank = vectorRank.get(getFileStem(r.path))
+    const vRank = vectorRank.get(wikiPageIdFromPath(pp, r.path))
     let rrf = 0
     if (tRank !== undefined) rrf += 1 / (RRF_K + tRank)
     if (vRank !== undefined) rrf += 1 / (RRF_K + vRank)
@@ -492,4 +562,3 @@ function scoreFile(
     images: extractImageRefs(content),
   }
 }
-

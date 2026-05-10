@@ -27,6 +27,11 @@ import type { FileNode } from "@/types/wiki"
 import { normalizePath } from "@/lib/path-utils"
 import { getHttpFetch, isFetchNetworkError } from "@/lib/tauri-fetch"
 import { chunkMarkdown, type Chunk } from "@/lib/text-chunker"
+import {
+  rawSourceVectorId,
+  sourceRefForPath,
+  wikiPageIdFromPath,
+} from "@/lib/source-identity"
 
 // ── Error surfacing ──────────────────────────────────────────────────────
 
@@ -220,6 +225,12 @@ async function vectorCountChunks(projectPath: string): Promise<number> {
   })
 }
 
+async function vectorClearChunks(projectPath: string): Promise<void> {
+  await invoke("vector_clear_chunks", {
+    projectPath: normalizePath(projectPath),
+  })
+}
+
 export async function legacyVectorRowCount(projectPath: string): Promise<number> {
   try {
     return await invoke("vector_legacy_row_count", {
@@ -258,14 +269,7 @@ function enrichChunkForEmbedding(
 
 // ── Public API: embedPage / embedAllPages / searchByEmbedding ────────────
 
-/**
- * Embed a wiki page: chunk → per-chunk embed → replace the page's
- * vectors in LanceDB in one batch. Every transient failure leaves the
- * existing v2 rows intact (empty upsert is a no-op Rust-side).
- *
- * Called by ingest.ts after writing a page to disk.
- */
-export async function embedPage(
+async function embedDocument(
   projectPath: string,
   pageId: string,
   title: string,
@@ -313,6 +317,45 @@ export async function embedPage(
 }
 
 /**
+ * Embed a wiki page: chunk → per-chunk embed → replace the page's
+ * vectors in LanceDB in one batch. Every transient failure leaves the
+ * existing v2 rows intact (empty upsert is a no-op Rust-side).
+ *
+ * Called by ingest.ts after writing a page to disk.
+ */
+export async function embedPage(
+  projectPath: string,
+  pageId: string,
+  title: string,
+  content: string,
+  cfg: EmbeddingConfig,
+): Promise<void> {
+  await embedDocument(projectPath, pageId, title, content, cfg)
+}
+
+/**
+ * Embed the full extracted text of a raw source file. The id lives in
+ * the same LanceDB table as wiki pages but is prefixed with
+ * `raw-sources/`, allowing search.ts to materialize it back to the
+ * source-summary page while preserving recall for details omitted from
+ * the generated summary.
+ */
+export async function embedRawSource(
+  projectPath: string,
+  sourceRef: string,
+  content: string,
+  cfg: EmbeddingConfig,
+): Promise<void> {
+  await embedDocument(
+    projectPath,
+    rawSourceVectorId(sourceRef),
+    sourceRef,
+    content,
+    cfg,
+  )
+}
+
+/**
  * Embed every wiki content page that isn't already indexed (or re-embed
  * all when `force === true`). Driven from Settings → Embedding or on
  * first enable. Skips structural pages (index / log / overview /
@@ -340,14 +383,25 @@ export async function embedAllPages(
       if (node.is_dir && node.children) {
         walk(node.children)
       } else if (!node.is_dir && node.name.endsWith(".md")) {
-        const id = node.name.replace(/\.md$/, "")
-        if (!["index", "log", "overview", "purpose", "schema"].includes(id)) {
+        const id = wikiPageIdFromPath(pp, node.path)
+        const base = id.split("/").pop() ?? id
+        if (!["index", "log", "overview", "purpose", "schema"].includes(base)) {
           mdFiles.push({ id, path: node.path })
         }
       }
     }
   }
   walk(tree)
+
+  let rawSourceFiles: string[] = []
+  try {
+    const sourceTree = await listDirectory(`${pp}/raw/sources`)
+    rawSourceFiles = flattenRawSourceFiles(sourceTree)
+  } catch {
+    rawSourceFiles = []
+  }
+
+  const total = mdFiles.length + rawSourceFiles.length
 
   let done = 0
   for (const file of mdFiles) {
@@ -360,10 +414,35 @@ export async function embedAllPages(
       // skip — individual file failure doesn't halt the batch
     }
     done++
-    if (onProgress) onProgress(done, mdFiles.length)
+    if (onProgress) onProgress(done, total)
+  }
+
+  for (const path of rawSourceFiles) {
+    try {
+      const content = await readFile(path)
+      const sourceRef = sourceRefForPath(pp, path)
+      await embedRawSource(pp, sourceRef, content, cfg)
+    } catch {
+      // skip — individual source failure doesn't halt the batch
+    }
+    done++
+    if (onProgress) onProgress(done, total)
   }
 
   return done
+}
+
+function flattenRawSourceFiles(nodes: FileNode[]): string[] {
+  const files: string[] = []
+  for (const node of nodes) {
+    if (node.name.startsWith(".")) continue
+    if (node.is_dir && node.children) {
+      files.push(...flattenRawSourceFiles(node.children))
+    } else if (!node.is_dir) {
+      files.push(node.path)
+    }
+  }
+  return files
 }
 
 /**
@@ -471,4 +550,12 @@ export async function getEmbeddingCount(projectPath: string): Promise<number> {
   } catch {
     return 0
   }
+}
+
+/**
+ * Drop the current v2 chunk table. Used before a full reindex so old
+ * stem-only ids do not survive alongside path-based ids.
+ */
+export async function clearEmbeddingChunks(projectPath: string): Promise<void> {
+  await vectorClearChunks(projectPath)
 }

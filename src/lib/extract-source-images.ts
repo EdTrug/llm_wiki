@@ -15,6 +15,7 @@
  */
 import { invoke } from "@tauri-apps/api/core"
 import { getFileName, normalizePath } from "@/lib/path-utils"
+import { mediaDirForSourceRef, sourceRefForPath } from "@/lib/source-identity"
 
 /** Mirrors `commands::extract_images::SavedImage` on the Rust side. */
 export interface SavedImage {
@@ -51,8 +52,9 @@ const SUPPORTED_OFFICE_EXTS = ["pptx", "docx", "ppt", "doc"] as const
  * as an empty array — image extraction failure must NEVER abort the
  * ingest pipeline (which is why this isn't `throws`).
  *
- * `slug` is the basename of the source file without extension. Same
- * convention the rest of ingest uses (see `wiki/sources/<slug>.md`).
+ * Destination identity follows the source's path under raw/sources.
+ * `raw/sources/team-a/notes.pdf` maps to `wiki/media/team-a/notes/`,
+ * so duplicate basenames in different folders do not collide.
  */
 export async function extractAndSaveSourceImages(
   projectPath: string,
@@ -67,8 +69,8 @@ export async function extractAndSaveSourceImages(
   const isOffice = (SUPPORTED_OFFICE_EXTS as readonly string[]).includes(ext)
   if (!isPdf && !isOffice) return []
 
-  const slug = fileName.replace(/\.[^.]+$/, "")
-  const destDir = `${pp}/wiki/media/${slug}`
+  const sourceRef = sourceRefForPath(pp, sp)
+  const destDir = mediaDirForSourceRef(pp, sourceRef)
   const relTo = `${pp}/wiki`
 
   try {

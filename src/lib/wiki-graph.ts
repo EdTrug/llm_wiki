@@ -2,6 +2,7 @@ import { readFile, listDirectory } from "@/commands/fs"
 import type { FileNode } from "@/types/wiki"
 import { buildRetrievalGraph, calculateRelevance } from "./graph-relevance"
 import { normalizePath } from "@/lib/path-utils"
+import { pageIdBasename, wikiPageIdFromPath } from "@/lib/source-identity"
 import Graph from "graphology"
 import louvain from "graphology-communities-louvain"
 
@@ -152,10 +153,6 @@ function extractWikilinks(content: string): string[] {
   return links
 }
 
-function fileNameToId(fileName: string): string {
-  return fileName.replace(/\.md$/, "")
-}
-
 export async function buildWikiGraph(
   projectPath: string,
 ): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; communities: CommunityInfo[] }> {
@@ -180,7 +177,7 @@ export async function buildWikiGraph(
   >()
 
   for (const file of mdFiles) {
-    const id = fileNameToId(file.name)
+    const id = wikiPageIdFromPath(projectPath, file.path)
     let content = ""
     try {
       content = await readFile(file.path)
@@ -295,9 +292,13 @@ function resolveTarget(
   // Normalize: lowercase, replace spaces with hyphens and vice versa
   const normalized = raw.toLowerCase().replace(/\s+/g, "-")
   for (const id of nodeMap.keys()) {
+    const base = pageIdBasename(id)
     if (id.toLowerCase() === normalized) return id
     if (id.toLowerCase() === raw.toLowerCase()) return id
     if (id.toLowerCase().replace(/\s+/g, "-") === normalized) return id
+    if (base.toLowerCase() === normalized) return id
+    if (base.toLowerCase() === raw.toLowerCase()) return id
+    if (base.toLowerCase().replace(/\s+/g, "-") === normalized) return id
   }
 
   return null

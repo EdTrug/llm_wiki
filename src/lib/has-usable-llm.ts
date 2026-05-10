@@ -12,6 +12,8 @@ export type LlmProvider = LlmConfig["provider"]
  *   - `claude-code` spawns the Claude Code CLI subprocess, which
  *     authenticates via the user's existing ~/.claude OAuth — no
  *     API key is needed (or accepted) at this layer.
+ *   - `codex-cli` spawns the local Codex CLI subprocess, which
+ *     authenticates via the user's existing Codex login.
  *
  * Hosted providers (openai, anthropic, google, minimax) require a
  * key from the user.
@@ -20,6 +22,7 @@ export const PROVIDERS_WITHOUT_KEY: ReadonlySet<LlmProvider> = new Set<LlmProvid
   "ollama",
   "custom",
   "claude-code",
+  "codex-cli",
 ])
 
 /**

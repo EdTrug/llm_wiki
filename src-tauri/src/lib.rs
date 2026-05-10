@@ -69,10 +69,11 @@ pub fn run() {
             } else {
                 eprintln!("[proxy] could not resolve app_data_dir");
             }
-            // Registry of running `claude` subprocesses, keyed by the
-            // frontend-generated stream id. Populated by claude_cli_spawn,
-            // drained on process exit or by claude_cli_kill.
+            // Registries of running CLI-provider subprocesses, keyed by
+            // the frontend-generated stream id. Populated by *_spawn,
+            // drained on process exit or by *_kill.
             app.manage(commands::claude_cli::ClaudeCliState::default());
+            app.manage(commands::codex_cli::CodexCliState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -98,11 +99,15 @@ pub fn run() {
             commands::vectorstore::vector_search_chunks,
             commands::vectorstore::vector_delete_page,
             commands::vectorstore::vector_count_chunks,
+            commands::vectorstore::vector_clear_chunks,
             commands::vectorstore::vector_legacy_row_count,
             commands::vectorstore::vector_drop_legacy,
             commands::claude_cli::claude_cli_detect,
             commands::claude_cli::claude_cli_spawn,
             commands::claude_cli::claude_cli_kill,
+            commands::codex_cli::codex_cli_detect,
+            commands::codex_cli::codex_cli_spawn,
+            commands::codex_cli::codex_cli_kill,
             commands::extract_images::extract_pdf_images_cmd,
             commands::extract_images::extract_office_images_cmd,
             commands::extract_images::extract_and_save_pdf_images_cmd,

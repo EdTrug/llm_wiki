@@ -25,7 +25,11 @@ vi.mock("@/commands/fs", () => realFs)
 // Stub searchByEmbedding so each test scripts the exact ranked list
 // of vector results coming from LanceDB, with no real model calls.
 const mockSearchByEmbedding =
-  vi.fn<(...args: unknown[]) => Promise<Array<{ id: string; score: number }>>>()
+  vi.fn<(...args: unknown[]) => Promise<Array<{
+    id: string
+    score: number
+    matchedChunks?: Array<{ text: string; headingPath: string; score: number }>
+  }>>>()
 vi.mock("./embedding", () => ({
   searchByEmbedding: (...args: unknown[]) => mockSearchByEmbedding(...args),
 }))
@@ -249,5 +253,33 @@ describe("searchWiki — RRF fusion of token + vector lists", () => {
     // materialization (every `tryPath` readFile throws ENOENT).
     expect(out).toHaveLength(1)
     expect(out[0].title).toBe("Exists")
+  })
+
+  it("raw source vector hits materialize to the matching source summary page", async () => {
+    ctx = await setupProject({
+      "wiki/sources/team-a/notes.md":
+        "---\ntitle: Team A Notes\nsources: [\"raw/sources/team-a/notes.pdf\"]\n---\n\n# Team A Notes\n\nShort summary.",
+    })
+
+    mockSearchByEmbedding.mockResolvedValueOnce([
+      {
+        id: "raw-sources/team-a/notes.pdf",
+        score: 0.91,
+        matchedChunks: [
+          {
+            text: "This raw source chunk mentions capacitor aging details.",
+            headingPath: "",
+            score: 0.91,
+          },
+        ],
+      },
+    ])
+
+    const out = await searchWiki(ctx.tmp.path, "capacitor aging")
+
+    expect(out[0].title).toBe("Team A Notes")
+    expect(out[0].path.endsWith("/wiki/sources/team-a/notes.md")).toBe(true)
+    expect(out[0].snippet).toContain("capacitor aging")
+    expect(out[0].score).toBeCloseTo(1 / 61, 6)
   })
 })

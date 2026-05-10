@@ -37,11 +37,13 @@ vi.mock("@/commands/fs", () => ({
 import {
   searchByEmbedding,
   embedPage,
+  embedRawSource,
   embedAllPages,
   getLastEmbeddingError,
   legacyVectorRowCount,
   dropLegacyVectorTable,
   getEmbeddingCount,
+  clearEmbeddingChunks,
   removePageEmbedding,
   type PageSearchResult,
 } from "./embedding"
@@ -644,7 +646,7 @@ describe("embedAllPages", () => {
     const upsertCalls = mockInvoke.mock.calls.filter((c) => c[0] === "vector_upsert_chunks")
     expect(upsertCalls).toHaveLength(2)
     const pageIds = upsertCalls.map((c) => (c[1] as { pageId: string }).pageId).sort()
-    expect(pageIds).toEqual(["attention", "rope"])
+    expect(pageIds).toEqual(["rope", "sub/attention"])
   })
 
   it("extracts the title from YAML frontmatter when present", async () => {
@@ -717,6 +719,48 @@ describe("embedAllPages", () => {
     expect(upserts).toHaveLength(1)
     expect((upserts[0][1] as { pageId: string }).pageId).toBe("b")
   })
+
+  it("indexes raw source files with raw-sources-prefixed ids", async () => {
+    listDirectoryMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          name: "team-a",
+          path: "/proj/raw/sources/team-a",
+          is_dir: true,
+          children: [
+            { name: "notes.pdf", path: "/proj/raw/sources/team-a/notes.pdf", is_dir: false },
+          ],
+        },
+      ])
+    readFileMock.mockResolvedValue("raw source body")
+    mockHttpFetch.mockImplementation(async () => okResponse([0.5]))
+
+    const count = await embedAllPages("/proj", cfg)
+
+    expect(count).toBe(1)
+    const upsertCalls = mockInvoke.mock.calls.filter((c) => c[0] === "vector_upsert_chunks")
+    expect(upsertCalls).toHaveLength(1)
+    expect((upsertCalls[0][1] as { pageId: string }).pageId).toBe(
+      "raw-sources/team-a/notes.pdf",
+    )
+  })
+
+  it("embedRawSource uses the canonical raw source vector id", async () => {
+    mockHttpFetch.mockImplementation(async () => okResponse([0.5]))
+
+    await embedRawSource(
+      "/proj",
+      "raw/sources/team-b/notes.pdf",
+      "raw body",
+      cfg,
+    )
+
+    const upsert = mockInvoke.mock.calls.find((c) => c[0] === "vector_upsert_chunks")!
+    expect((upsert[1] as { pageId: string }).pageId).toBe(
+      "raw-sources/team-b/notes.pdf",
+    )
+  })
 })
 
 // ── Legacy & misc helpers ───────────────────────────────────────────
@@ -770,5 +814,13 @@ describe("legacyVectorRowCount / dropLegacyVectorTable / getEmbeddingCount / rem
     mockInvoke.mockRejectedValueOnce(new Error("table missing"))
     // Must not throw — source-delete flow depends on silent failure.
     await expect(removePageEmbedding("/proj", "rope")).resolves.toBeUndefined()
+  })
+
+  it("clearEmbeddingChunks: invokes vector_clear_chunks", async () => {
+    mockInvoke.mockResolvedValueOnce(undefined)
+    await clearEmbeddingChunks("/proj")
+    expect(mockInvoke).toHaveBeenCalledWith("vector_clear_chunks", {
+      projectPath: "/proj",
+    })
   })
 })

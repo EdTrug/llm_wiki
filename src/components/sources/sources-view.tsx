@@ -11,6 +11,7 @@ import { enqueueIngest, enqueueBatch } from "@/lib/ingest-queue"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
 import { useTranslation } from "react-i18next"
 import { normalizePath, getFileName } from "@/lib/path-utils"
+import { sourceRefForPath } from "@/lib/source-identity"
 import { parseSources, writeSources } from "@/lib/sources-merge"
 import { decidePageFate } from "@/lib/source-delete-decision"
 import { removeFromIngestCache } from "@/lib/ingest-cache"
@@ -154,8 +155,9 @@ export function SourcesView() {
 
     setImporting(true)
     const pp = normalizePath(project.path)
-    const folderName = getFileName(selected) || "imported"
-    const destDir = `${pp}/raw/sources/${folderName}`
+    const originalFolderName = getFileName(selected) || "imported"
+    const destDir = await getUniqueDestDirPath(`${pp}/raw/sources`, originalFolderName)
+    const folderName = getFileName(destDir) || originalFolderName
 
     try {
       // Recursively copy the folder
@@ -164,7 +166,7 @@ export function SourcesView() {
         destination: destDir,
       })
 
-      console.log(`[Folder Import] Copied ${copiedFiles.length} files from ${folderName}`)
+      console.log(`[Folder Import] Copied ${copiedFiles.length} files from ${originalFolderName} to ${folderName}`)
 
       // Preprocess all files
       for (const filePath of copiedFiles) {
@@ -312,15 +314,19 @@ export function SourcesView() {
     node: FileNode,
   ): Promise<{ deletedWikiPaths: string[] }> {
     const fileName = node.name
+    const sourceRef = sourceRefForPath(pp, node.path)
+    const deletingAliases = hasDuplicateBasename(sources, fileName, node.path)
+      ? []
+      : [fileName]
     // Step 1: Find related wiki pages before deleting
-    const relatedPages = await findRelatedWikiPages(pp, fileName)
+    const relatedPages = await findRelatedWikiPages(pp, sourceRef)
 
     // Step 2: Delete the source file
     await deleteFile(node.path)
 
     // Step 3: Delete preprocessed cache
     try {
-      await deleteFile(`${pp}/raw/sources/.cache/${fileName}.txt`)
+      await deleteFile(cachePathForSource(node.path))
     } catch {
       // cache file may not exist
     }
@@ -349,7 +355,7 @@ export function SourcesView() {
         try {
           const content = await readFile(pagePath)
           const sourcesList = parseSources(content)
-          const decision = decidePageFate(sourcesList, fileName)
+          const decision = decidePageFate(sourcesList, sourceRef, deletingAliases)
 
           if (decision.action === "skip") {
             // Nothing to do — page isn't really derived from this source.
@@ -394,7 +400,7 @@ export function SourcesView() {
       const logContent = await readFile(logPath).catch(() => "# Wiki Log\n")
       const date = new Date().toISOString().slice(0, 10)
       const keptCount = relatedPages.length - actuallyDeleted.length
-      const logEntry = `\n## [${date}] delete | ${fileName}\n\nDeleted source file and ${actuallyDeleted.length} wiki pages.${keptCount > 0 ? ` ${keptCount} shared pages kept (have other sources).` : ""}\n`
+      const logEntry = `\n## [${date}] delete | ${sourceRef}\n\nDeleted source file and ${actuallyDeleted.length} wiki pages.${keptCount > 0 ? ` ${keptCount} shared pages kept (have other sources).` : ""}\n`
       await writeFile(logPath, logContent.trimEnd() + logEntry)
     } catch {
       // non-critical
@@ -409,7 +415,10 @@ export function SourcesView() {
     // for foo.pdf: wiki/sources/foo.md no longer on disk" on
     // every search after a delete.
     try {
-      await removeFromIngestCache(pp, fileName)
+      await removeFromIngestCache(pp, sourceRef)
+      for (const alias of deletingAliases) {
+        await removeFromIngestCache(pp, alias)
+      }
     } catch {
       // non-critical
     }
@@ -536,6 +545,61 @@ async function getUniqueDestPath(dir: string, fileName: string): Promise<string>
 
   // Shouldn't happen, but fallback
   return `${dir}/${nameWithoutExt}-${date}-${Date.now()}${ext}`
+}
+
+async function getUniqueDestDirPath(parentDir: string, folderName: string): Promise<string> {
+  const basePath = `${parentDir}/${folderName}`
+  try {
+    await listDirectory(basePath)
+  } catch {
+    return basePath
+  }
+
+  const date = new Date().toISOString().slice(0, 10).replace(/-/g, "")
+  const withDate = `${parentDir}/${folderName}-${date}`
+  try {
+    await listDirectory(withDate)
+  } catch {
+    return withDate
+  }
+
+  for (let i = 2; i <= 99; i++) {
+    const withCounter = `${parentDir}/${folderName}-${date}-${i}`
+    try {
+      await listDirectory(withCounter)
+    } catch {
+      return withCounter
+    }
+  }
+
+  return `${parentDir}/${folderName}-${date}-${Date.now()}`
+}
+
+function cachePathForSource(sourcePath: string): string {
+  const normalized = normalizePath(sourcePath)
+  const slash = normalized.lastIndexOf("/")
+  const dir = slash >= 0 ? normalized.slice(0, slash) : "."
+  const fileName = slash >= 0 ? normalized.slice(slash + 1) : normalized
+  return `${dir}/.cache/${fileName}.txt`
+}
+
+function hasDuplicateBasename(
+  nodes: FileNode[],
+  fileName: string,
+  currentPath: string,
+): boolean {
+  let count = 0
+  function walk(items: FileNode[]) {
+    for (const item of items) {
+      if (item.is_dir && item.children) {
+        walk(item.children)
+      } else if (!item.is_dir && item.name === fileName) {
+        count++
+      }
+    }
+  }
+  walk(nodes)
+  return count > 1 || nodes.some((n) => n.path !== currentPath && n.name === fileName)
 }
 
 function filterTree(nodes: FileNode[]): FileNode[] {
@@ -762,4 +826,3 @@ function DeleteButton({
     </Button>
   )
 }
-

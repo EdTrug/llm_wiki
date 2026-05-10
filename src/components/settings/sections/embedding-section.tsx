@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { useWikiStore } from "@/stores/wiki-store"
 import {
+  clearEmbeddingChunks,
   dropLegacyVectorTable,
   embedAllPages,
   getEmbeddingCount,
@@ -56,6 +57,7 @@ export function EmbeddingSection({ draft, setDraft }: Props) {
   const handleReindex = useCallback(async () => {
     if (!project) return
     setReindex({ kind: "running", done: 0, total: 0 })
+    await clearEmbeddingChunks(project.path)
     const count = await embedAllPages(project.path, embeddingConfig, (done, total) => {
       setReindex({ kind: "running", done, total })
     })

@@ -552,10 +552,10 @@ describe("cleanupWrittenFiles — embedding cascade", () => {
     expect(mockDeleteFile).toHaveBeenNthCalledWith(1, "/proj/wiki/concepts/rope.md")
     expect(mockDeleteFile).toHaveBeenNthCalledWith(2, "/proj/wiki/entities/transformer.md")
 
-    // Embedding cascade uses page slugs (basename minus .md).
+    // Embedding cascade uses wiki-relative page ids.
     expect(removePageEmbeddingMock).toHaveBeenCalledTimes(2)
-    expect(removePageEmbeddingMock).toHaveBeenNthCalledWith(1, "/proj", "rope")
-    expect(removePageEmbeddingMock).toHaveBeenNthCalledWith(2, "/proj", "transformer")
+    expect(removePageEmbeddingMock).toHaveBeenNthCalledWith(1, "/proj", "concepts/rope")
+    expect(removePageEmbeddingMock).toHaveBeenNthCalledWith(2, "/proj", "entities/transformer")
   })
 
   it("uses absolute paths verbatim (doesn't double-prefix the project path)", async () => {
@@ -568,7 +568,7 @@ describe("cleanupWrittenFiles — embedding cascade", () => {
 
     expect(mockDeleteFile).toHaveBeenCalledWith("/abs/elsewhere/wiki/concepts/foo.md")
     // Slug derivation still works on absolute paths.
-    expect(removePageEmbeddingMock).toHaveBeenCalledWith("/proj", "foo")
+    expect(removePageEmbeddingMock).toHaveBeenCalledWith("/proj", "concepts/foo")
   })
 
   it("continues to subsequent files when one delete throws", async () => {
@@ -590,7 +590,7 @@ describe("cleanupWrittenFiles — embedding cascade", () => {
     // First file's embedding cascade was skipped (deleteFile threw),
     // second file's cascade still ran.
     expect(removePageEmbeddingMock).toHaveBeenCalledTimes(1)
-    expect(removePageEmbeddingMock).toHaveBeenCalledWith("/proj", "present")
+    expect(removePageEmbeddingMock).toHaveBeenCalledWith("/proj", "concepts/present")
   })
 
   it("swallows removePageEmbedding errors so a LanceDB issue doesn't abort cleanup", async () => {
@@ -615,17 +615,17 @@ describe("cleanupWrittenFiles — embedding cascade", () => {
     expect(removePageEmbeddingMock).toHaveBeenCalledTimes(2)
   })
 
-  it("handles Windows backslash paths via getFileStem", async () => {
+  it("handles Windows backslash paths via wiki-relative ids", async () => {
     const { deleteFile } = await import("@/commands/fs")
     const mockDeleteFile = vi.mocked(deleteFile)
     mockDeleteFile.mockReset()
     mockDeleteFile.mockResolvedValue(undefined)
 
     // A path that's been rewritten with backslashes (Windows ingest
-    // pipeline output before normalize). getFileStem must still
-    // pull "rope" out cleanly so the cascade hits the right page.
+    // pipeline output before normalize). The cascade must still
+    // derive the path-based page id.
     await cleanupWrittenFiles("C:/proj", ["wiki\\concepts\\rope.md"])
 
-    expect(removePageEmbeddingMock).toHaveBeenCalledWith("C:/proj", "rope")
+    expect(removePageEmbeddingMock).toHaveBeenCalledWith("C:/proj", "concepts/rope")
   })
 })

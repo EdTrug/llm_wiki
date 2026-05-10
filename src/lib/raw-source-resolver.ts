@@ -25,6 +25,10 @@
  */
 import { listDirectory } from "@/commands/fs"
 import type { FileNode } from "@/types/wiki"
+import {
+  sourceRefForPath,
+  sourceStemPathFromRef,
+} from "@/lib/source-identity"
 
 export async function findRawSourceForImage(
   imageUrl: string,
@@ -33,10 +37,12 @@ export async function findRawSourceForImage(
   // Image URLs reach us in TWO shapes:
   //   1. ABSOLUTE: `/Users/.../wiki/media/<slug>/img-N.png`
   //   2. WIKI-RELATIVE: `media/<slug>/img-N.png`
-  // Match `media/<slug>/` either at the URL start or after any `/`.
-  const m = imageUrl.replace(/\\/g, "/").match(/(?:^|\/)media\/([^/]+)\//)
+  // Match `media/<source-stem-path>/...` either at the URL start or
+  // after any `/`. The stem path may contain subdirectories:
+  // `media/team-a/notes/img-1.png`.
+  const m = imageUrl.replace(/\\/g, "/").match(/(?:^|\/)media\/(.+)\/[^/]+$/)
   if (!m) return null
-  const slug = m[1]
+  const sourceStemPath = m[1]
 
   let tree: FileNode[]
   try {
@@ -54,8 +60,8 @@ export async function findRawSourceForImage(
         }
         continue
       }
-      const stem = node.name.replace(/\.[^.]+$/, "")
-      if (stem === slug) return node.path
+      const ref = sourceRefForPath(projectPath, node.path)
+      if (sourceStemPathFromRef(ref) === sourceStemPath) return node.path
     }
     return null
   }

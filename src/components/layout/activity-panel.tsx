@@ -7,6 +7,7 @@ import {
 import { useActivityStore, type ActivityItem } from "@/stores/activity-store"
 import { useWikiStore } from "@/stores/wiki-store"
 import { normalizePath, getFileName, isAbsolutePath } from "@/lib/path-utils"
+import { sourceRefForPath } from "@/lib/source-identity"
 import { getQueue, getQueueSummary, retryTask, cancelTask, cancelAllTasks, type IngestTask } from "@/lib/ingest-queue"
 
 const FILE_TYPE_ICONS: Record<string, typeof FileText> = {
@@ -175,7 +176,11 @@ export function ActivityPanel() {
           {items.map((item) => {
             // Find matching queue task for cancel button
             const matchingTask = item.status === "running"
-              ? queueTasks.find((t) => t.status === "processing" && getFileName(t.sourcePath) === item.title)
+              ? queueTasks.find((t) => {
+                  if (t.status !== "processing") return false
+                  const sourceRef = project ? sourceRefForPath(project.path, t.sourcePath) : ""
+                  return sourceRef === item.title || getFileName(t.sourcePath) === item.title
+                })
               : undefined
             return (
               <ActivityRow

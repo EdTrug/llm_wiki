@@ -50,4 +50,24 @@ describe("resolveConfig", () => {
 
     expect(resolved.reasoning).toEqual({ mode: "off" })
   })
+
+  it("resolves Codex CLI as a no-key subprocess provider", () => {
+    const preset: LlmPreset = {
+      id: "codex-cli",
+      label: "Codex CLI",
+      provider: "codex-cli",
+      defaultModel: "gpt-5.5",
+      suggestedContextSize: 1000000,
+    }
+
+    const resolved = resolveConfig(preset, undefined, fallbackConfig())
+
+    expect(resolved).toMatchObject({
+      provider: "codex-cli",
+      apiKey: "",
+      model: "gpt-5.5",
+      maxContextSize: 1000000,
+      reasoning: { mode: "auto" },
+    })
+  })
 })

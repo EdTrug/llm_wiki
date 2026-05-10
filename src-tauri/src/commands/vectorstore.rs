@@ -317,9 +317,18 @@ fn validate_page_id_for_v2(page_id: &str) -> Result<(), String> {
     if page_id.is_empty() || page_id.len() > 256 {
         return Err("Invalid page_id: empty or too long".to_string());
     }
+    if page_id.starts_with('/') || page_id.ends_with('/') || page_id.contains("//") {
+        return Err(format!("Invalid page_id: contains disallowed path shape: {}", page_id));
+    }
+    if page_id
+        .split('/')
+        .any(|seg| seg.is_empty() || seg == "." || seg == "..")
+    {
+        return Err(format!("Invalid page_id: contains disallowed path segment: {}", page_id));
+    }
     if !page_id
         .chars()
-        .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.')
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '/')
     {
         return Err(format!(
             "Invalid page_id: contains disallowed characters: {}",
@@ -644,6 +653,36 @@ pub async fn vector_count_chunks(project_path: String) -> Result<usize, String> 
     .await
 }
 
+/// Drop the v2 chunks table entirely. Called before a full reindex when
+/// the TypeScript side changes page-id derivation; otherwise stale ids
+/// can survive forever because upsert only replaces one page_id at a time.
+#[tauri::command]
+pub async fn vector_clear_chunks(project_path: String) -> Result<(), String> {
+    run_guarded_async("vector_clear_chunks", async move {
+        let db = connect(&db_path(&project_path))
+            .execute()
+            .await
+            .map_err(|e| format!("DB connect error: {e}"))?;
+
+        let tables = db
+            .table_names()
+            .execute()
+            .await
+            .map_err(|e| format!("List tables error: {e}"))?;
+
+        if !tables.contains(&TABLE_V2.to_string()) {
+            return Ok(());
+        }
+
+        db.drop_table(TABLE_V2, &[])
+            .await
+            .map_err(|e| format!("Drop table error: {e}"))?;
+
+        Ok(())
+    })
+    .await
+}
+
 /// Report whether the legacy per-page v1 table exists with any rows —
 /// the TS layer uses this to show a one-time "re-index to v2" prompt in
 /// Settings → Embedding after upgrading. Returns 0 when v1 is absent or
@@ -908,6 +947,43 @@ mod tests_v2 {
         vector_delete_page(pp.clone(), "page-a".into()).await.unwrap();
         vector_delete_page(pp.clone(), "page-a".into()).await.unwrap();
 
+        assert_eq!(vector_count_chunks(pp).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn v2_accepts_path_based_page_ids() {
+        let p = tmp_project();
+        let pp = p.to_string_lossy().to_string();
+
+        vector_upsert_chunks(
+            pp.clone(),
+            "sources/team-a/notes".into(),
+            make_chunks("sources/team-a/notes", 2, 16),
+        )
+        .await
+        .unwrap();
+        assert_eq!(vector_count_chunks(pp.clone()).await.unwrap(), 2);
+
+        vector_delete_page(pp.clone(), "sources/team-a/notes".into())
+            .await
+            .unwrap();
+        assert_eq!(vector_count_chunks(pp).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn v2_clear_chunks_drops_current_table() {
+        let p = tmp_project();
+        let pp = p.to_string_lossy().to_string();
+
+        vector_upsert_chunks(pp.clone(), "page-a".into(), make_chunks("page-a", 2, 16))
+            .await
+            .unwrap();
+        vector_upsert_chunks(pp.clone(), "page-b".into(), make_chunks("page-b", 2, 16))
+            .await
+            .unwrap();
+        assert_eq!(vector_count_chunks(pp.clone()).await.unwrap(), 4);
+
+        vector_clear_chunks(pp.clone()).await.unwrap();
         assert_eq!(vector_count_chunks(pp).await.unwrap(), 0);
     }
 

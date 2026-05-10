@@ -1,6 +1,7 @@
 import { readFile, listDirectory } from "@/commands/fs"
 import type { FileNode } from "@/types/wiki"
 import { normalizePath } from "@/lib/path-utils"
+import { pageIdBasename, wikiPageIdFromPath } from "@/lib/source-identity"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -64,10 +65,6 @@ function flattenMdFiles(nodes: readonly FileNode[]): FileNode[] {
   return files
 }
 
-function fileNameToId(fileName: string): string {
-  return fileName.replace(/\.md$/, "")
-}
-
 function extractFrontmatter(content: string): { title: string; type: string; sources: string[] } {
   const fmMatch = content.match(/^---\n([\s\S]*?)\n---/)
   const fm = fmMatch ? fmMatch[1] : ""
@@ -129,10 +126,15 @@ function resolveTarget(
 
   const normalized = raw.toLowerCase().replace(/\s+/g, "-")
   for (const id of nodeIds) {
+    const base = pageIdBasename(id)
     const idLower = id.toLowerCase()
+    const baseLower = base.toLowerCase()
     if (idLower === normalized) return id
     if (idLower === raw.toLowerCase()) return id
     if (idLower.replace(/\s+/g, "-") === normalized) return id
+    if (baseLower === normalized) return id
+    if (baseLower === raw.toLowerCase()) return id
+    if (baseLower.replace(/\s+/g, "-") === normalized) return id
   }
   return null
 }
@@ -185,7 +187,7 @@ export async function buildRetrievalGraph(
   }> = []
 
   for (const file of mdFiles) {
-    const id = fileNameToId(file.name)
+    const id = wikiPageIdFromPath(projectPath, file.path)
     let content = ""
     try {
       content = await readFile(file.path)

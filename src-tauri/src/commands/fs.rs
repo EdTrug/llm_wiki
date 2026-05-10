@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::Read as IoRead;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use calamine::{Reader, open_workbook_auto, Data};
 
@@ -313,9 +313,10 @@ pub(crate) fn pdfium() -> Result<&'static pdfium_render::prelude::Pdfium, String
 /// layout the import pipeline produces). Falls back to text-only
 /// when the PDF is opened from anywhere else.
 ///
-/// Layout heuristic: a PDF at `<project>/raw/sources/<name>.pdf`
-/// implies project root = `<project>` and image dest =
-/// `<project>/wiki/media/<name>/`. We use absolute filesystem paths
+/// Layout heuristic: a PDF at
+/// `<project>/raw/sources/<optional/subdirs>/<name>.pdf` implies
+/// project root = `<project>` and image dest =
+/// `<project>/wiki/media/<optional/subdirs>/<name>/`. We use absolute filesystem paths
 /// in the emitted `![](url)` references so the markdown previews
 /// (raw-source view AND wiki-summary view) both render via
 /// `convertFileSrc` without anyone having to know which directory
@@ -328,42 +329,36 @@ fn extract_pdf_text(path: &str) -> Result<String, String> {
     use crate::commands::extract_images::{extract_pdf_markdown, ExtractOptions};
 
     let p = Path::new(path);
-    let parent = p.parent();
-    let stem = p
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
+    let normalized = p.to_string_lossy().replace('\\', "/");
+    let marker = "/raw/sources/";
 
-    // The path-component check uses `ends_with` on `Path` which
-    // matches the LAST component (not a string-suffix check), so
-    // `/foo/raw/sources/bar.pdf` correctly identifies as under
-    // `raw/sources/` while `/foo/braw/source-thing/bar.pdf` does
-    // not.
-    let parent_is_sources = parent.map(|d| d.ends_with("sources")).unwrap_or(false);
-    let raw_dir = parent.and_then(|d| d.parent());
-    let raw_is_raw = raw_dir.map(|d| d.ends_with("raw")).unwrap_or(false);
-    let project_root = if parent_is_sources && raw_is_raw {
-        raw_dir.and_then(|d| d.parent())
-    } else {
-        None
-    };
-
-    if let Some(root) = project_root {
-        if !stem.is_empty() {
-            let media_dir = root.join("wiki").join("media").join(&stem);
-            // Forward-slash absolute path so we don't ship `\` into
-            // markdown that the JS-side resolver would then have to
-            // re-normalize. The resolver does handle backslashes,
-            // but emitting clean URLs in the first place avoids
-            // surprises in cache files we save to disk.
-            let url_prefix = media_dir.to_string_lossy().replace('\\', "/");
-            return extract_pdf_markdown(
-                path,
-                Some(&media_dir),
-                &url_prefix,
-                &ExtractOptions::default(),
-            );
+    if let Some(idx) = normalized.find(marker) {
+        let root = &normalized[..idx];
+        let source_rel = &normalized[idx + marker.len()..];
+        if !root.is_empty() && !source_rel.is_empty() && !source_rel.split('/').any(|seg| seg == ".." || seg.is_empty()) {
+            let rel_path = Path::new(source_rel);
+            let mut media_rel = PathBuf::new();
+            if let Some(parent) = rel_path.parent() {
+                media_rel.push(parent);
+            }
+            if let Some(stem) = rel_path.file_stem().and_then(|s| s.to_str()) {
+                if !stem.is_empty() {
+                    media_rel.push(stem);
+                    let media_dir = Path::new(root).join("wiki").join("media").join(media_rel);
+                    // Forward-slash absolute path so we don't ship `\` into
+                    // markdown that the JS-side resolver would then have to
+                    // re-normalize. The resolver does handle backslashes,
+                    // but emitting clean URLs in the first place avoids
+                    // surprises in cache files we save to disk.
+                    let url_prefix = media_dir.to_string_lossy().replace('\\', "/");
+                    return extract_pdf_markdown(
+                        path,
+                        Some(&media_dir),
+                        &url_prefix,
+                        &ExtractOptions::default(),
+                    );
+                }
+            }
         }
     }
 
@@ -1109,12 +1104,14 @@ fn collect_related_pages(dir: &Path, source_name: &str, results: &mut Vec<String
     let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
 
     // Get just the filename without path — use Path for cross-platform separator handling
-    let source_path = std::path::Path::new(source_name);
+    let source_name_normalized = source_name.replace('\\', "/");
+    let source_path = std::path::Path::new(&source_name_normalized);
     let file_name = source_path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(source_name);
     let file_name_lower = file_name.to_lowercase();
+    let source_ref_lower = source_name_normalized.to_lowercase();
 
     // Derive stem (filename without extension) for source summary matching
     let file_stem = file_name
@@ -1143,7 +1140,9 @@ fn collect_related_pages(dir: &Path, source_name: &str, results: &mut Vec<String
 
                 // Match 1: frontmatter sources field contains the exact filename
                 // e.g., sources: ["2603.25723v1.pdf"]
-                let sources_match = content_lower.contains(&format!("\"{}\"", file_name_lower))
+                let sources_match = content_lower.contains(&format!("\"{}\"", source_ref_lower))
+                    || content_lower.contains(&format!("'{}'", source_ref_lower))
+                    || content_lower.contains(&format!("\"{}\"", file_name_lower))
                     || content_lower.contains(&format!("'{}'", file_name_lower));
 
                 // Match 2: source summary page (wiki/sources/{stem}.md)
@@ -1179,7 +1178,7 @@ fn collect_related_pages(dir: &Path, source_name: &str, results: &mut Vec<String
                             if line.starts_with("sources:") {
                                 // Inline-form `sources: [...]` lives
                                 // entirely on this one line; check it.
-                                if line.contains(&file_name_lower) {
+                                if line.contains(&source_ref_lower) || line.contains(&file_name_lower) {
                                     found = true;
                                     break;
                                 }
@@ -1192,7 +1191,7 @@ fn collect_related_pages(dir: &Path, source_name: &str, results: &mut Vec<String
                                 // we've left the sources block for
                                 // another top-level field.
                                 if line.is_empty() || line.starts_with(' ') || line.starts_with('\t') {
-                                    if line.contains(&file_name_lower) {
+                                    if line.contains(&source_ref_lower) || line.contains(&file_name_lower) {
                                         found = true;
                                         break;
                                     }

@@ -23,6 +23,9 @@ import { deleteFile, listDirectory, readFile, writeFile } from "@/commands/fs"
 import { getFileStem, normalizePath } from "@/lib/path-utils"
 import { removePageEmbedding } from "@/lib/embedding"
 import {
+  wikiPageIdFromPath,
+} from "@/lib/source-identity"
+import {
   buildDeletedKeys,
   cleanIndexListing,
   extractFrontmatterTitle,
@@ -46,7 +49,7 @@ import type { FileNode } from "@/types/wiki"
  */
 function isSourcePage(pagePath: string): boolean {
   const normalized = normalizePath(pagePath)
-  return normalized.includes("/wiki/sources/")
+  return normalized.includes("/wiki/sources/") || normalized.startsWith("wiki/sources/")
 }
 
 /**
@@ -60,9 +63,10 @@ function isSourcePage(pagePath: string): boolean {
  * cascade to the right LanceDB instance, and to locate the media
  * directory).
  *
- * `pagePath` may be absolute or relative; only its basename is used
- * for the page-id lookup, so callers don't need to normalize before
- * calling. The disk delete uses the path verbatim — pass an
+ * `pagePath` may be absolute or relative. The embedding id is derived
+ * from the page's wiki-relative path, so pages with the same basename
+ * in different wiki directories do not collide. The disk delete uses
+ * the path verbatim — pass an
  * absolute path if your caller has one (most do).
  */
 export async function cascadeDeleteWikiPage(
@@ -70,9 +74,9 @@ export async function cascadeDeleteWikiPage(
   pagePath: string,
 ): Promise<void> {
   await deleteFile(pagePath)
-  const slug = getFileStem(pagePath)
-  if (slug.length > 0) {
-    await removePageEmbedding(projectPath, slug)
+  const pageId = wikiPageIdFromPath(projectPath, pagePath)
+  if (pageId.length > 0) {
+    await removePageEmbedding(projectPath, pageId)
   }
 
   // Media cascade: source-summary deletion → drop the source's
@@ -89,6 +93,9 @@ export async function cascadeDeleteWikiPage(
   // that resolves to a hidden directory under `wiki/media/`. The
   // worst case (slug == ".") would target `wiki/media/.` and delete
   // the entire media root.
+  const slug = isSourcePage(pagePath) && pageId.startsWith("sources/")
+    ? pageId.slice("sources/".length)
+    : getFileStem(pagePath)
   if (isSourcePage(pagePath) && slug.length > 0 && !slug.startsWith(".")) {
     const pp = normalizePath(projectPath)
     const mediaDir = `${pp}/wiki/media/${slug}`

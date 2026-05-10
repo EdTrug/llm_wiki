@@ -119,11 +119,15 @@ function PresetRow({
   const baseUrl = ov.baseUrl ?? preset.baseUrl ?? ""
   const context = ov.maxContextSize ?? preset.suggestedContextSize ?? 131072
   const reasoning = ov.reasoning ?? { mode: "auto" as const }
+  const isCodexCli = preset.provider === "codex-cli"
   const hasConfig = !!apiKey || !!ov.baseUrl || !!ov.model
-  // Claude Code CLI authenticates via the user's existing ~/.claude OAuth
+  // Local CLI providers authenticate via their own existing login state
   // (inherited from the spawned subprocess), so no API key field is
   // shown. Ollama ditto for its local-only model.
-  const needsApiKey = preset.provider !== "ollama" && preset.provider !== "claude-code"
+  const needsApiKey =
+    preset.provider !== "ollama" &&
+    preset.provider !== "claude-code" &&
+    preset.provider !== "codex-cli"
 
   return (
     <div
@@ -247,6 +251,7 @@ function PresetRow({
           )}
 
           {preset.provider === "claude-code" && <ClaudeCliStatusPill />}
+          {isCodexCli && <CodexCliStatusPill />}
 
           {needsApiKey && (
             <div className="space-y-2">
@@ -269,7 +274,11 @@ function PresetRow({
             <ModelPicker
               value={model}
               suggestions={preset.suggestedModels ?? []}
-              placeholder={preset.defaultModel ?? "e.g. gpt-4o"}
+              placeholder={
+                isCodexCli
+                  ? "gpt-5.5"
+                  : preset.defaultModel ?? "e.g. gpt-4o"
+              }
               onChange={(v) => onChange({ model: v })}
             />
           </div>
@@ -282,10 +291,12 @@ function PresetRow({
             />
           </div>
 
-          <ReasoningControls
-            value={reasoning}
-            onChange={(reasoning) => onChange({ reasoning })}
-          />
+          {!isCodexCli && (
+            <ReasoningControls
+              value={reasoning}
+              onChange={(reasoning) => onChange({ reasoning })}
+            />
+          )}
         </div>
       )}
     </div>
@@ -591,6 +602,101 @@ function ClaudeCliStatusPill() {
                   npm i -g @anthropic-ai/claude-code
                 </code>{" "}
                 then re-check.
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Health-check pill for the Codex CLI provider. This only validates
+ * that `codex --version` runs; auth is still checked lazily by the
+ * first `codex exec` call, so the UI also shows the login remediation.
+ */
+function CodexCliStatusPill() {
+  const [state, setState] = useState<"loading" | "ok" | "err">("loading")
+  const [result, setResult] = useState<DetectResult | null>(null)
+
+  async function detect() {
+    setState("loading")
+    try {
+      const r = await invoke<DetectResult>("codex_cli_detect")
+      setResult(r)
+      setState(r.installed ? "ok" : "err")
+    } catch (e) {
+      setResult({
+        installed: false,
+        version: null,
+        path: null,
+        error: e instanceof Error ? e.message : String(e),
+      })
+      setState("err")
+    }
+  }
+
+  useEffect(() => {
+    void detect()
+  }, [])
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2">
+        <Label className="m-0">CLI status</Label>
+        <button
+          type="button"
+          onClick={() => void detect()}
+          className="rounded border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          disabled={state === "loading"}
+        >
+          {state === "loading" ? "Checking..." : "Re-check"}
+        </button>
+      </div>
+      <div
+        className={`flex items-start gap-1.5 rounded-md border px-2 py-1.5 text-xs ${
+          state === "ok"
+            ? "border-emerald-500/40 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400"
+            : state === "err"
+              ? "border-rose-500/40 bg-rose-500/5 text-rose-700 dark:text-rose-400"
+              : "border-border bg-background/50 text-muted-foreground"
+        }`}
+      >
+        {state === "loading" && <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />}
+        {state === "ok" && <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+        {state === "err" && <XCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />}
+        <div className="min-w-0 flex-1 space-y-0.5">
+          {state === "loading" && <div>Detecting local codex binary...</div>}
+          {state === "ok" && (
+            <>
+              <div>
+                Detected{result?.version ? ` ${result.version}` : ""}. Ready to use your local
+                Codex login. Defaults to GPT-5.5 with xhigh reasoning and Fast mode off; no API key needed.
+              </div>
+              {result?.path && (
+                <div className="truncate font-mono text-[10px] text-muted-foreground">
+                  {result.path}
+                </div>
+              )}
+              <div className="text-muted-foreground">
+                If chat fails with an authentication error, run{" "}
+                <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[10px]">
+                  codex login
+                </code>{" "}
+                in a terminal.
+              </div>
+            </>
+          )}
+          {state === "err" && (
+            <>
+              <div>{result?.error ?? "codex CLI not available."}</div>
+              <div className="text-muted-foreground">
+                Install Codex CLI, then run{" "}
+                <code className="rounded bg-background/60 px-1 py-0.5 font-mono text-[10px]">
+                  codex login
+                </code>{" "}
+                and re-check.
               </div>
             </>
           )}

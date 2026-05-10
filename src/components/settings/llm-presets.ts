@@ -16,6 +16,7 @@ export type Provider =
   | "custom"
   | "minimax"
   | "claude-code"
+  | "codex-cli"
 
 export interface LlmPreset {
   /** Stable id used as the dropdown value. */
@@ -90,6 +91,15 @@ export const LLM_PRESETS: LlmPreset[] = [
       "claude-haiku-4-5-20251001",
     ],
     suggestedContextSize: 200000,
+  },
+  {
+    id: "codex-cli",
+    label: "Codex CLI (local)",
+    hint: "Uses local Codex with GPT-5.5, xhigh reasoning, and Fast mode off",
+    provider: "codex-cli",
+    defaultModel: "gpt-5.5",
+    suggestedModels: ["gpt-5.5"],
+    suggestedContextSize: 1000000,
   },
   {
     id: "openai",

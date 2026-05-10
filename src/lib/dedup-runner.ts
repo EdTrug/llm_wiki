@@ -4,7 +4,7 @@
  * functions; everything below is about read/write/spawn-llm so
  * the algorithm core stays testable without mocks of all that.
  */
-import { listDirectory, readFile, writeFile, deleteFile } from "@/commands/fs"
+import { listDirectory, readFile, writeFile } from "@/commands/fs"
 import { streamChat } from "@/lib/llm-client"
 import { normalizePath } from "@/lib/path-utils"
 import type { LlmConfig } from "@/stores/wiki-store"
@@ -20,6 +20,7 @@ import {
   type MergeResult,
 } from "./dedup"
 import { loadNotDuplicates } from "./dedup-storage"
+import { cascadeDeleteWikiPage } from "@/lib/wiki-page-delete"
 
 /**
  * Wrap streamChat into the (system, user, signal) → string shape
@@ -230,7 +231,7 @@ export async function executeMerge(
   // 5. Delete merged-away pages
   for (const dead of result.pagesToDelete) {
     try {
-      await deleteFile(`${pp}/${dead}`)
+      await cascadeDeleteWikiPage(pp, `${pp}/${dead}`)
     } catch (err) {
       // Surface as a warning — backup is still safe.
       console.warn(`[dedup] failed to delete ${dead}: ${err}`)

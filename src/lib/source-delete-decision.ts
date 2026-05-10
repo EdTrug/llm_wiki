@@ -33,11 +33,14 @@ export type DeleteDecision =
 export function decidePageFate(
   frontmatterSources: readonly string[],
   deletingSource: string,
+  aliases: readonly string[] = [],
 ): DeleteDecision {
-  const targetLower = deletingSource.toLowerCase()
+  const targetsLower = new Set(
+    [deletingSource, ...aliases].map((s) => s.toLowerCase()),
+  )
 
   const inList = frontmatterSources.some(
-    (s) => s.toLowerCase() === targetLower,
+    (s) => targetsLower.has(s.toLowerCase()),
   )
   if (!inList) {
     return {
@@ -47,7 +50,7 @@ export function decidePageFate(
   }
 
   const survivors = frontmatterSources.filter(
-    (s) => s.toLowerCase() !== targetLower,
+    (s) => !targetsLower.has(s.toLowerCase()),
   )
 
   if (survivors.length > 0) {
